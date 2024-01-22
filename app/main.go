@@ -1,11 +1,37 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
-	// Uncomment this block to pass the first stage
-	// "net"
 )
+
+type DNSMessage struct {
+  ID uint16
+  QR uint8
+  OPCODE uint8
+  AA uint8
+  TC uint8
+  RD uint8
+  Z uint8
+  RCODE uint8
+  QDCOUNT uint16
+  ANCOUNT uint16
+  NSCOUNT uint16
+  ARCOUNT uint16
+}
+
+func (m DNSMessage) serialize() []byte {
+	buffer := make([]byte, 12)
+	binary.BigEndian.PutUint16(buffer[0:2], m.ID)
+	buffer[2] = (m.QR << 7) | (m.OPCODE << 3) | (m.AA << 2) | (m.TC << 1) | m.RD
+	buffer[3] = (m.Z << 4) | m.RCODE
+	binary.BigEndian.PutUint16(buffer[4:6], m.QDCOUNT)
+	binary.BigEndian.PutUint16(buffer[6:8], m.ANCOUNT)
+	binary.BigEndian.PutUint16(buffer[8:10], m.NSCOUNT)
+	binary.BigEndian.PutUint16(buffer[10:12], m.ARCOUNT)
+	return buffer
+}
 
 func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -39,9 +65,22 @@ func main() {
 		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 
 		// Create an empty response
-		response := []byte{}
+    response := DNSMessage {
+      ID:  1234,
+      QR: 1,
+      OPCODE: 0,
+      AA: 0,
+      TC: 0,
+      RD: 0,
+      Z: 0,
+      RCODE: 0,
+      QDCOUNT: 0,
+      ANCOUNT: 0,
+      NSCOUNT: 0,
+      ARCOUNT: 0,
+    }
 
-		_, err = udpConn.WriteToUDP(response, source)
+		_, err = udpConn.WriteToUDP(response.serialize(), source)
 		if err != nil {
 			fmt.Println("Failed to send response:", err)
 		}
