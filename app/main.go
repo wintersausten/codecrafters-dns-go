@@ -4,9 +4,21 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
 )
 
 type DNSMessage struct {
+  Header
+  Questions []Question
+}
+
+type Question struct {
+  Name string
+  Type uint16
+  Class uint16
+}
+
+type Header struct {
   ID uint16
   QR uint8
   OPCODE uint8
@@ -21,24 +33,66 @@ type DNSMessage struct {
   ARCOUNT uint16
 }
 
-func (m DNSMessage) serialize() []byte {
+func newDNSMessage() DNSMessage {
+  q := []Question{
+    {
+      Name: "codecrafters.io",
+      Type: 1,
+      Class: 1,
+    },
+  }
+  h := Header {
+    ID:  1234,
+    QR: 1,
+    OPCODE: 0,
+    AA: 0,
+    TC: 0,
+    RD: 0,
+    Z: 0,
+    RCODE: 0,
+    QDCOUNT: uint16(len(q)),
+    ANCOUNT: 0,
+    NSCOUNT: 0,
+    ARCOUNT: 0,
+  }
+  return DNSMessage{Questions: q, Header: h}
+}
+
+func (h Header) serialize() []byte {
 	buffer := make([]byte, 12)
-	binary.BigEndian.PutUint16(buffer[0:2], m.ID)
-	buffer[2] = (m.QR << 7) | (m.OPCODE << 3) | (m.AA << 2) | (m.TC << 1) | m.RD
-	buffer[3] = (m.Z << 4) | m.RCODE
-	binary.BigEndian.PutUint16(buffer[4:6], m.QDCOUNT)
-	binary.BigEndian.PutUint16(buffer[6:8], m.ANCOUNT)
-	binary.BigEndian.PutUint16(buffer[8:10], m.NSCOUNT)
-	binary.BigEndian.PutUint16(buffer[10:12], m.ARCOUNT)
+	binary.BigEndian.PutUint16(buffer[0:2], h.ID)
+	buffer[2] = (h.QR << 7) | (h.OPCODE << 3) | (h.AA << 2) | (h.TC << 1) | h.RD
+	buffer[3] = (h.Z << 4) | h.RCODE
+	binary.BigEndian.PutUint16(buffer[4:6], h.QDCOUNT)
+	binary.BigEndian.PutUint16(buffer[6:8], h.ANCOUNT)
+	binary.BigEndian.PutUint16(buffer[8:10], h.NSCOUNT)
+	binary.BigEndian.PutUint16(buffer[10:12], h.ARCOUNT)
 	return buffer
 }
 
+func (q Question) serialize() []byte {
+  labels := strings.Split(q.Name, ".")
+  buffer := []byte{}
+  for _, label := range(labels) {
+    buffer = append(buffer, byte(len(label)))
+    buffer = append(buffer, []byte(label)...)
+  }
+  buffer = append(buffer, '\x00')
+  buffer = append(buffer, byte(q.Type>>8), byte(q.Type))
+  buffer = append(buffer, byte(q.Class>>8), byte(q.Class))
+  return buffer
+}
+
+func (m DNSMessage) serialize() []byte {
+  buffer := []byte{}
+  buffer = append(buffer, m.Header.serialize()...)
+  for _, q := range(m.Questions) {
+    buffer = append(buffer, q.serialize()...)
+  }
+  return buffer
+}
+
 func main() {
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	fmt.Println("Logs from your program will appear here!")
-
-	// Uncomment this block to pass the first stage
-
 	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:2053")
 	if err != nil {
 		fmt.Println("Failed to resolve UDP address:", err)
@@ -64,21 +118,7 @@ func main() {
 		receivedData := string(buf[:size])
 		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 
-		// Create an empty response
-    response := DNSMessage {
-      ID:  1234,
-      QR: 1,
-      OPCODE: 0,
-      AA: 0,
-      TC: 0,
-      RD: 0,
-      Z: 0,
-      RCODE: 0,
-      QDCOUNT: 0,
-      ANCOUNT: 0,
-      NSCOUNT: 0,
-      ARCOUNT: 0,
-    }
+    response := newDNSMessage()
 
 		_, err = udpConn.WriteToUDP(response.serialize(), source)
 		if err != nil {
