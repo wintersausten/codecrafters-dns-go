@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -10,12 +11,7 @@ import (
 type DNSMessage struct {
   Header
   Questions []Question
-}
-
-type Question struct {
-  Name string
-  Type uint16
-  Class uint16
+  Answer []RR
 }
 
 type Header struct {
@@ -33,8 +29,23 @@ type Header struct {
   ARCOUNT uint16
 }
 
+type Question struct {
+  Name string
+  Type uint16
+  Class uint16
+}
+
+type RR struct {
+  Name string
+  Type uint16
+  Class uint16
+  TTL uint32
+  Length uint16
+  Data []byte
+}
+
 func newDNSMessage() DNSMessage {
-  q := []Question{
+  q := []Question {
     {
       Name: "codecrafters.io",
       Type: 1,
@@ -55,7 +66,17 @@ func newDNSMessage() DNSMessage {
     NSCOUNT: 0,
     ARCOUNT: 0,
   }
-  return DNSMessage{Questions: q, Header: h}
+  a := []RR {
+    {
+      Name: "codecrafters.io",
+      Type: 1,
+      Class: 1,
+      TTL: 60,
+      Length: 4,
+      Data: []byte("\x08\x08\x08\x08"),
+    },
+  }
+  return DNSMessage{Questions: q, Header: h, Answer: a}
 }
 
 func (h Header) serialize() []byte {
@@ -71,15 +92,38 @@ func (h Header) serialize() []byte {
 }
 
 func (q Question) serialize() []byte {
-  labels := strings.Split(q.Name, ".")
+  buffer := new(bytes.Buffer)
+  buffer.Write(serializeDomain(q.Name))
+  buffer.Write(make([]byte, 2))
+  binary.Write(buffer, binary.BigEndian, uint16(q.Type))
+  buffer.Write(make([]byte, 2))
+  binary.Write(buffer, binary.BigEndian, uint16(q.Class))
+  return buffer.Bytes()
+}
+
+func (r RR) serialize() []byte {
+  buffer := new(bytes.Buffer)
+  buffer.Write(serializeDomain(r.Name))
+  buffer.Write(make([]byte, 2))
+  binary.Write(buffer, binary.BigEndian, uint16(r.Type))
+  buffer.Write(make([]byte, 2))
+  binary.Write(buffer, binary.BigEndian, uint16(r.Class))
+  buffer.Write(make([]byte, 4))
+  binary.Write(buffer, binary.BigEndian, uint32(r.TTL))
+  buffer.Write(make([]byte, 2))
+  binary.Write(buffer, binary.BigEndian, uint16(r.Length))
+  buffer.Write(r.Data)
+  return buffer.Bytes()
+}
+
+func serializeDomain(domain string) []byte {
   buffer := []byte{}
+  labels := strings.Split(domain, ".")
   for _, label := range(labels) {
     buffer = append(buffer, byte(len(label)))
     buffer = append(buffer, []byte(label)...)
   }
   buffer = append(buffer, '\x00')
-  buffer = append(buffer, byte(q.Type>>8), byte(q.Type))
-  buffer = append(buffer, byte(q.Class>>8), byte(q.Class))
   return buffer
 }
 
@@ -88,6 +132,9 @@ func (m DNSMessage) serialize() []byte {
   buffer = append(buffer, m.Header.serialize()...)
   for _, q := range(m.Questions) {
     buffer = append(buffer, q.serialize()...)
+  }
+  for _, r := range(m.Answer) {
+    buffer = append(buffer, r.serialize()...)
   }
   return buffer
 }
