@@ -57,7 +57,7 @@ func newDNSMessage(dnsRequest DNSMessage) DNSMessage {
 
   a := []RR {
     {
-      Name: dnsRequest.Answer[0].Name,
+      Name: dnsRequest.Questions[0].Name,
       Type: 1,
       Class: 1,
       TTL: 60,
