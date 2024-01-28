@@ -57,7 +57,7 @@ func newDNSMessage(dnsRequest DNSMessage) DNSMessage {
 
   a := []RR {
     {
-      Name: "codecrafters.io",
+      Name: dnsRequest.Answer[0].Name,
       Type: 1,
       Class: 1,
       TTL: 60,
@@ -67,7 +67,7 @@ func newDNSMessage(dnsRequest DNSMessage) DNSMessage {
   }
   q := []Question {
     {
-      Name: "codecrafters.io",
+      Name: dnsRequest.Questions[0].Name,
       Type: 1,
       Class: 1,
     },
