@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -65,7 +66,7 @@ func newQuestion(name string) Question {
   }
 }
 
-func newDNSMessage(dnsRequest DNSMessage) DNSMessage {
+func generateResponse(dnsRequest DNSMessage) DNSMessage {
   var responseRCODE uint8
   switch dnsRequest.OPCODE {
   case 0:
@@ -88,8 +89,32 @@ func newDNSMessage(dnsRequest DNSMessage) DNSMessage {
     AA: 0,
     TC: 0,
     RD: dnsRequest.RD,
+    RA: dnsRequest.RA,
     Z: 0,
     RCODE: responseRCODE,
+    QDCOUNT: uint16(len(q)),
+    ANCOUNT: uint16(len(a)),
+    NSCOUNT: 0,
+    ARCOUNT: 0,
+  }
+  return DNSMessage{Questions: q, Header: h, Answer: a}
+}
+
+func generateRequest(originalRequest DNSMessage, singleQuestion Question) DNSMessage {
+  a := []RR {}
+  q := []Question{}
+  q = append(q, singleQuestion)
+
+  h := Header {
+    ID:  originalRequest.ID,
+    QR: 0,
+    OPCODE: originalRequest.OPCODE,
+    AA: 0,
+    TC: 0,
+    RD: originalRequest.RD,
+    RA: originalRequest.RA,
+    Z: 0,
+    RCODE: 0,
     QDCOUNT: uint16(len(q)),
     ANCOUNT: uint16(len(a)),
     NSCOUNT: 0,
@@ -158,18 +183,16 @@ func parseDNSMessage(data []byte) (DNSMessage, error) {
 
     reader := bytes.NewReader(data)
 
- // Parse Header
     hdr, err := parseHeader(data)
     if err != nil {
         return msg, err
     }
     msg.Header = *hdr
 
-    // Advance reader past header
     _, _ = reader.Seek(12, io.SeekStart)
     for i := 0; i < int(msg.Header.QDCOUNT); i++ {
         var q Question
-        q.Name, err = parseName(reader, )
+        q.Name, err = readName(reader)
         if err != nil {
             return msg, fmt.Errorf("failed to parse question name: %v", err)
         }
@@ -186,7 +209,7 @@ func parseDNSMessage(data []byte) (DNSMessage, error) {
 
     for i := 0; i < int(msg.Header.ANCOUNT); i++ {
         var rr RR
-        rr.Name, err = parseName(reader)
+        rr.Name, err = readName(reader)
         if err != nil {
             return msg, fmt.Errorf("failed to parse RR name: %v", err)
         }
@@ -217,9 +240,8 @@ func parseDNSMessage(data []byte) (DNSMessage, error) {
     return msg, nil
 }
 
-// parseHeader parses the DNS message header from a byte slice.
 func parseHeader(data []byte) (*Header, error) {
-	if len(data) < 12 { // DNS header is always 12 bytes
+	if len(data) < 12 {
 		return nil, fmt.Errorf("header too short")
 	}
 
@@ -234,7 +256,7 @@ func parseHeader(data []byte) (*Header, error) {
 	header.TC = uint8(flags >> 9 & 0x01)
 	header.RD = uint8(flags >> 8 & 0x01)
 	header.RA = uint8(flags >> 7 & 0x01)
-	header.Z = uint8(flags >> 4 & 0x07) // Only 3 bits used
+	header.Z = uint8(flags >> 4 & 0x07)
 	header.RCODE = uint8(flags & 0x0F)
 
 	header.QDCOUNT = binary.BigEndian.Uint16(data[4:6])
@@ -244,14 +266,9 @@ func parseHeader(data []byte) (*Header, error) {
 
 	return header, nil
 }
-
-func parseName(reader *bytes.Reader) (string, error) {
+func parseName(reader *bytes.Reader, offset int64) (string, error) {
     var nameParts []string
-    var jumped bool
-    var finalOffset int64
-    var originalOffset int64
-
-    originalOffset, _ = reader.Seek(0, io.SeekCurrent)
+    reader.Seek(offset, io.SeekStart) // Move to the correct offset to start reading the name
 
     for {
         var length byte
@@ -260,48 +277,45 @@ func parseName(reader *bytes.Reader) (string, error) {
             return "", fmt.Errorf("failed to read name length: %v", err)
         }
 
+        // Check if this is a pointer
         if length >= 192 {
-            if !jumped {
-                finalOffset, _ = reader.Seek(0, io.SeekCurrent)
-                jumped = true
-            }
-
             var offsetPart byte
             err := binary.Read(reader, binary.BigEndian, &offsetPart)
             if err != nil {
                 return "", fmt.Errorf("failed to read the second part of the pointer: %v", err)
             }
-            offset := int64(length&0x3F)<<8 + int64(offsetPart)
-
-            reader.Seek(offset, io.SeekStart)
-            continue
-        }
-
-        if length == 0 {
+            newOffset := int64(length&0x3F)<<8 + int64(offsetPart)
+            // Recursively parse the name starting at the new offset
+            partName, err := parseName(reader, newOffset)
+            if err != nil {
+                return "", err
+            }
+            nameParts = append(nameParts, partName)
+            break 
+        } else if length == 0 {
             break
-        }
-
-        labels := make([]byte, length)
-        _, err = reader.Read(labels)
-        if err != nil {
-            return "", fmt.Errorf("failed to read name labels: %v", err)
-        }
-        nameParts = append(nameParts, string(labels))
-
-        if jumped {
-            reader.Seek(finalOffset, io.SeekStart)
-            break
+        } else {
+            labels := make([]byte, length)
+            _, err = reader.Read(labels)
+            if err != nil {
+                return "", fmt.Errorf("failed to read name labels: %v", err)
+            }
+            nameParts = append(nameParts, string(labels))
         }
     }
-
-    if jumped {
-        reader.Seek(originalOffset, io.SeekStart)
-    }
-
     return strings.Join(nameParts, "."), nil
 }
 
+func readName(reader *bytes.Reader) (string, error) {
+    currentOffset, _ := reader.Seek(0, io.SeekCurrent)
+    return parseName(reader, currentOffset)
+}
+
+var resolverFlag = flag.String("resolver", ".", "Address of DNS server to forward to")
+
 func main() {
+  flag.Parse()
+
 	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:2053")
 	if err != nil {
 		fmt.Println("Failed to resolve UDP address:", err)
@@ -325,13 +339,34 @@ func main() {
 		}
 
 		dnsRequest, _ := parseDNSMessage(buf[:size])
-		// fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 
-    response := newDNSMessage(dnsRequest)
+    var response DNSMessage
+    if *resolverFlag == "" {
+      response = generateResponse(dnsRequest)
+    } else {
+      addr, _ := net.ResolveUDPAddr("udp", *resolverFlag)
+      conn, _ := net.DialUDP("udp", nil, addr)
 
-		_, err = udpConn.WriteToUDP(response.serialize(), source)
-		if err != nil {
-			fmt.Println("Failed to send response:", err)
-		}
+      // just overwrite the answers
+      response = generateResponse(dnsRequest)
+      response.Answer = []RR{}
+      for _, reqQ := range dnsRequest.Questions {
+        req := generateRequest(dnsRequest, reqQ)
+        conn.Write(req.serialize())
+
+        buffer := make([]byte, 512)
+        conn.ReadFromUDP(buffer)
+
+        dnsResponse, _ := parseDNSMessage(buffer)
+        if len(dnsResponse.Answer) > 0 {
+          response.Answer = append(response.Answer, dnsResponse.Answer[0])
+        }
+      }
+      response.Header.ANCOUNT = uint16(len(response.Answer))
+    }
+    _, err = udpConn.WriteToUDP(response.serialize(), source)
+    if err != nil {
+      fmt.Println("Failed to send response:", err)
+    }
 	}
 }
