@@ -46,6 +46,25 @@ type RR struct {
   Data []byte
 }
 
+func newRR(name string) RR {
+  return RR {
+    Name: name,
+    Type: 1,
+    Class: 1,
+    TTL: 60,
+    Length: 4,
+    Data: []byte("\x08\x08\x08\x08"),
+  }
+}
+
+func newQuestion(name string) Question {
+  return Question {
+    Name: name,
+    Type: 1,
+    Class: 1,
+  }
+}
+
 func newDNSMessage(dnsRequest DNSMessage) DNSMessage {
   var responseRCODE uint8
   switch dnsRequest.OPCODE {
@@ -55,23 +74,13 @@ func newDNSMessage(dnsRequest DNSMessage) DNSMessage {
     responseRCODE = 4
   }
 
-  a := []RR {
-    {
-      Name: dnsRequest.Questions[0].Name,
-      Type: 1,
-      Class: 1,
-      TTL: 60,
-      Length: 4,
-      Data: []byte("\x08\x08\x08\x08"),
-    },
+  a := []RR {}
+  q := []Question{}
+  for _, reqQ := range(dnsRequest.Questions) {
+    a = append(a, newRR(reqQ.Name))
+    q = append(q, newQuestion(reqQ.Name))
   }
-  q := []Question {
-    {
-      Name: dnsRequest.Questions[0].Name,
-      Type: 1,
-      Class: 1,
-    },
-  }
+
   h := Header {
     ID:  dnsRequest.ID,
     QR: 1,
