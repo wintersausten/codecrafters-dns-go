@@ -45,6 +45,16 @@ type RR struct {
 }
 
 func newDNSMessage() DNSMessage {
+  a := []RR {
+    {
+      Name: "codecrafters.io",
+      Type: 1,
+      Class: 1,
+      TTL: 60,
+      Length: 4,
+      Data: []byte("\x08\x08\x08\x08"),
+    },
+  }
   q := []Question {
     {
       Name: "codecrafters.io",
@@ -62,21 +72,30 @@ func newDNSMessage() DNSMessage {
     Z: 0,
     RCODE: 0,
     QDCOUNT: uint16(len(q)),
-    ANCOUNT: 0,
+    ANCOUNT: uint16(len(a)),
     NSCOUNT: 0,
     ARCOUNT: 0,
   }
-  a := []RR {
-    {
-      Name: "codecrafters.io",
-      Type: 1,
-      Class: 1,
-      TTL: 60,
-      Length: 4,
-      Data: []byte("\x08\x08\x08\x08"),
-    },
-  }
   return DNSMessage{Questions: q, Header: h, Answer: a}
+}
+
+func (q Question) serialize() []byte {
+    buffer := new(bytes.Buffer)
+    buffer.Write(serializeDomain(q.Name))
+    binary.Write(buffer, binary.BigEndian, q.Type)
+    binary.Write(buffer, binary.BigEndian, q.Class)
+    return buffer.Bytes()
+}
+
+func (r RR) serialize() []byte {
+    buffer := new(bytes.Buffer)
+    buffer.Write(serializeDomain(r.Name))
+    binary.Write(buffer, binary.BigEndian, r.Type)
+    binary.Write(buffer, binary.BigEndian, r.Class)
+    binary.Write(buffer, binary.BigEndian, r.TTL)
+    binary.Write(buffer, binary.BigEndian, uint16(len(r.Data)))
+    buffer.Write(r.Data)
+    return buffer.Bytes()
 }
 
 func (h Header) serialize() []byte {
@@ -91,31 +110,6 @@ func (h Header) serialize() []byte {
 	return buffer
 }
 
-func (q Question) serialize() []byte {
-  buffer := new(bytes.Buffer)
-  buffer.Write(serializeDomain(q.Name))
-  buffer.Write(make([]byte, 2))
-  binary.Write(buffer, binary.BigEndian, uint16(q.Type))
-  buffer.Write(make([]byte, 2))
-  binary.Write(buffer, binary.BigEndian, uint16(q.Class))
-  return buffer.Bytes()
-}
-
-func (r RR) serialize() []byte {
-  buffer := new(bytes.Buffer)
-  buffer.Write(serializeDomain(r.Name))
-  buffer.Write(make([]byte, 2))
-  binary.Write(buffer, binary.BigEndian, uint16(r.Type))
-  buffer.Write(make([]byte, 2))
-  binary.Write(buffer, binary.BigEndian, uint16(r.Class))
-  buffer.Write(make([]byte, 4))
-  binary.Write(buffer, binary.BigEndian, uint32(r.TTL))
-  buffer.Write(make([]byte, 2))
-  binary.Write(buffer, binary.BigEndian, uint16(r.Length))
-  buffer.Write(r.Data)
-  return buffer.Bytes()
-}
-
 func serializeDomain(domain string) []byte {
   buffer := []byte{}
   labels := strings.Split(domain, ".")
@@ -128,15 +122,15 @@ func serializeDomain(domain string) []byte {
 }
 
 func (m DNSMessage) serialize() []byte {
-  buffer := []byte{}
-  buffer = append(buffer, m.Header.serialize()...)
+  buffer := new(bytes.Buffer)
+  buffer.Write(m.Header.serialize())
   for _, q := range(m.Questions) {
-    buffer = append(buffer, q.serialize()...)
+    buffer.Write(q.serialize())
   }
   for _, r := range(m.Answer) {
-    buffer = append(buffer, r.serialize()...)
+    buffer.Write(r.serialize())
   }
-  return buffer
+  return buffer.Bytes()
 }
 
 func main() {
