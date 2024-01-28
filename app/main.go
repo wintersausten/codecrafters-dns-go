@@ -48,7 +48,7 @@ type RR struct {
 
 func newDNSMessage(dnsRequest DNSMessage) DNSMessage {
   var responseRCODE uint8
-  switch dnsRequest.RCODE {
+  switch dnsRequest.OPCODE {
   case 0:
     responseRCODE = 0
   default:
