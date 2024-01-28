@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 )
@@ -21,6 +22,7 @@ type Header struct {
   AA uint8
   TC uint8
   RD uint8
+  RA uint8
   Z uint8
   RCODE uint8
   QDCOUNT uint16
@@ -44,7 +46,15 @@ type RR struct {
   Data []byte
 }
 
-func newDNSMessage() DNSMessage {
+func newDNSMessage(dnsRequest DNSMessage) DNSMessage {
+  var responseRCODE uint8
+  switch dnsRequest.RCODE {
+  case 0:
+    responseRCODE = 0
+  default:
+    responseRCODE = 4
+  }
+
   a := []RR {
     {
       Name: "codecrafters.io",
@@ -63,14 +73,14 @@ func newDNSMessage() DNSMessage {
     },
   }
   h := Header {
-    ID:  1234,
+    ID:  dnsRequest.ID,
     QR: 1,
-    OPCODE: 0,
+    OPCODE: dnsRequest.OPCODE,
     AA: 0,
     TC: 0,
-    RD: 0,
+    RD: dnsRequest.RD,
     Z: 0,
-    RCODE: 0,
+    RCODE: responseRCODE,
     QDCOUNT: uint16(len(q)),
     ANCOUNT: uint16(len(a)),
     NSCOUNT: 0,
@@ -102,7 +112,7 @@ func (h Header) serialize() []byte {
 	buffer := make([]byte, 12)
 	binary.BigEndian.PutUint16(buffer[0:2], h.ID)
 	buffer[2] = (h.QR << 7) | (h.OPCODE << 3) | (h.AA << 2) | (h.TC << 1) | h.RD
-	buffer[3] = (h.Z << 4) | h.RCODE
+  buffer[3] = (h.RA << 7) | (h.Z << 4) | h.RCODE	
 	binary.BigEndian.PutUint16(buffer[4:6], h.QDCOUNT)
 	binary.BigEndian.PutUint16(buffer[6:8], h.ANCOUNT)
 	binary.BigEndian.PutUint16(buffer[8:10], h.NSCOUNT)
@@ -133,6 +143,123 @@ func (m DNSMessage) serialize() []byte {
   return buffer.Bytes()
 }
 
+func parseDNSMessage(data []byte) (DNSMessage, error) {
+    var msg DNSMessage
+    var err error
+
+    reader := bytes.NewReader(data)
+
+ // Parse Header
+    hdr, err := parseHeader(data)
+    if err != nil {
+        return msg, err
+    }
+    msg.Header = *hdr
+
+    // Advance reader past header
+    _, _ = reader.Seek(12, io.SeekStart)
+    for i := 0; i < int(msg.Header.QDCOUNT); i++ {
+        var q Question
+        q.Name, err = parseName(reader)
+        if err != nil {
+            return msg, fmt.Errorf("failed to parse question name: %v", err)
+        }
+        err = binary.Read(reader, binary.BigEndian, &q.Type)
+        if err != nil {
+            return msg, fmt.Errorf("failed to parse question type: %v", err)
+        }
+        err = binary.Read(reader, binary.BigEndian, &q.Class)
+        if err != nil {
+            return msg, fmt.Errorf("failed to parse question class: %v", err)
+        }
+        msg.Questions = append(msg.Questions, q)
+    }
+
+    for i := 0; i < int(msg.Header.ANCOUNT); i++ {
+        var rr RR
+        rr.Name, err = parseName(reader)
+        if err != nil {
+            return msg, fmt.Errorf("failed to parse RR name: %v", err)
+        }
+        err = binary.Read(reader, binary.BigEndian, &rr.Type)
+        if err != nil {
+            return msg, fmt.Errorf("failed to parse RR type: %v", err)
+        }
+        err = binary.Read(reader, binary.BigEndian, &rr.Class)
+        if err != nil {
+            return msg, fmt.Errorf("failed to parse RR class: %v", err)
+        }
+        err = binary.Read(reader, binary.BigEndian, &rr.TTL)
+        if err != nil {
+            return msg, fmt.Errorf("failed to parse RR TTL: %v", err)
+        }
+        err = binary.Read(reader, binary.BigEndian, &rr.Length)
+        if err != nil {
+            return msg, fmt.Errorf("failed to parse RR data length: %v", err)
+        }
+        rr.Data = make([]byte, rr.Length)
+        _, err = reader.Read(rr.Data)
+        if err != nil {
+            return msg, fmt.Errorf("failed to parse RR data: %v", err)
+        }
+        msg.Answer = append(msg.Answer, rr)
+    }
+
+    return msg, nil
+}
+
+// parseHeader parses the DNS message header from a byte slice.
+func parseHeader(data []byte) (*Header, error) {
+	if len(data) < 12 { // DNS header is always 12 bytes
+		return nil, fmt.Errorf("header too short")
+	}
+
+	header := &Header{
+		ID: binary.BigEndian.Uint16(data[:2]),
+	}
+
+	flags := binary.BigEndian.Uint16(data[2:4])
+	header.QR = uint8(flags >> 15 & 0x01)
+	header.OPCODE = uint8(flags >> 11 & 0x0F)
+	header.AA = uint8(flags >> 10 & 0x01)
+	header.TC = uint8(flags >> 9 & 0x01)
+	header.RD = uint8(flags >> 8 & 0x01)
+	header.RA = uint8(flags >> 7 & 0x01)
+	header.Z = uint8(flags >> 4 & 0x07) // Only 3 bits used
+	header.RCODE = uint8(flags & 0x0F)
+
+	header.QDCOUNT = binary.BigEndian.Uint16(data[4:6])
+	header.ANCOUNT = binary.BigEndian.Uint16(data[6:8])
+	header.NSCOUNT = binary.BigEndian.Uint16(data[8:10])
+	header.ARCOUNT = binary.BigEndian.Uint16(data[10:12])
+
+	return header, nil
+}
+
+func parseName(reader *bytes.Reader) (string, error) {
+    var name string
+    var length byte
+    for {
+        err := binary.Read(reader, binary.BigEndian, &length)
+        if err != nil {
+            return "", fmt.Errorf("failed to read name length: %v", err)
+        }
+        if length == 0 {
+            break
+        }
+        labels := make([]byte, length)
+        _, err = reader.Read(labels)
+        if err != nil {
+            return "", fmt.Errorf("failed to read name labels: %v", err)
+        }
+        if len(name) > 0 {
+            name += "."
+        }
+        name += string(labels)
+    }
+    return name, nil
+}
+
 func main() {
 	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:2053")
 	if err != nil {
@@ -156,10 +283,10 @@ func main() {
 			break
 		}
 
-		receivedData := string(buf[:size])
-		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
+		dnsRequest, _ := parseDNSMessage(buf[:size])
+		// fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 
-    response := newDNSMessage()
+    response := newDNSMessage(dnsRequest)
 
 		_, err = udpConn.WriteToUDP(response.serialize(), source)
 		if err != nil {
