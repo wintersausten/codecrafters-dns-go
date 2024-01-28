@@ -160,7 +160,7 @@ func parseDNSMessage(data []byte) (DNSMessage, error) {
     _, _ = reader.Seek(12, io.SeekStart)
     for i := 0; i < int(msg.Header.QDCOUNT); i++ {
         var q Question
-        q.Name, err = parseName(reader)
+        q.Name, err = parseName(reader, )
         if err != nil {
             return msg, fmt.Errorf("failed to parse question name: %v", err)
         }
@@ -237,27 +237,59 @@ func parseHeader(data []byte) (*Header, error) {
 }
 
 func parseName(reader *bytes.Reader) (string, error) {
-    var name string
-    var length byte
+    var nameParts []string
+    var jumped bool
+    var finalOffset int64
+    var originalOffset int64
+
+    originalOffset, _ = reader.Seek(0, io.SeekCurrent)
+
     for {
+        var length byte
         err := binary.Read(reader, binary.BigEndian, &length)
         if err != nil {
             return "", fmt.Errorf("failed to read name length: %v", err)
         }
+
+        if length >= 192 {
+            if !jumped {
+                finalOffset, _ = reader.Seek(0, io.SeekCurrent)
+                jumped = true
+            }
+
+            var offsetPart byte
+            err := binary.Read(reader, binary.BigEndian, &offsetPart)
+            if err != nil {
+                return "", fmt.Errorf("failed to read the second part of the pointer: %v", err)
+            }
+            offset := int64(length&0x3F)<<8 + int64(offsetPart)
+
+            reader.Seek(offset, io.SeekStart)
+            continue
+        }
+
         if length == 0 {
             break
         }
+
         labels := make([]byte, length)
         _, err = reader.Read(labels)
         if err != nil {
             return "", fmt.Errorf("failed to read name labels: %v", err)
         }
-        if len(name) > 0 {
-            name += "."
+        nameParts = append(nameParts, string(labels))
+
+        if jumped {
+            reader.Seek(finalOffset, io.SeekStart)
+            break
         }
-        name += string(labels)
     }
-    return name, nil
+
+    if jumped {
+        reader.Seek(originalOffset, io.SeekStart)
+    }
+
+    return strings.Join(nameParts, "."), nil
 }
 
 func main() {
